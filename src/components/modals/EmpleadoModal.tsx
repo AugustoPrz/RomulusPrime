@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
+import { X, Send, Mail, CheckCircle, Clock, AlertCircle } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import type { Empleado } from '../../types';
 
@@ -17,6 +17,8 @@ export function EmpleadoModal({ empleado, onClose }: EmpleadoModalProps) {
     activo: true,
   });
   const [guardando, setGuardando] = useState(false);
+  const [enviandoInvitacion, setEnviandoInvitacion] = useState(false);
+  const [inviteStatus, setInviteStatus] = useState<string | null>(null);
 
   useEffect(() => {
     if (empleado) {
@@ -27,13 +29,36 @@ export function EmpleadoModal({ empleado, onClose }: EmpleadoModalProps) {
         telefono: empleado.telefono,
         activo: empleado.activo,
       });
+      setInviteStatus((empleado as Empleado & { invite_status?: string }).invite_status || null);
     }
   }, [empleado]);
 
+  const sendInvite = async (empleadoId: string, email: string, nombre: string) => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+    const response = await fetch(`${supabaseUrl}/functions/v1/send-invite`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${supabaseAnonKey}`,
+      },
+      body: JSON.stringify({ email, nombre, empleadoId }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Error al enviar invitacion');
+    }
+
+    return data;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.nombre || !formData.rol) {
-      alert('Complete los campos obligatorios');
+    if (!formData.nombre || !formData.rol || !formData.email) {
+      alert('Complete los campos obligatorios (Nombre, Rol y Email)');
       return;
     }
 
@@ -48,12 +73,22 @@ export function EmpleadoModal({ empleado, onClose }: EmpleadoModalProps) {
         if (error) throw error;
         alert('Empleado actualizado exitosamente');
       } else {
-        const { error } = await supabase
+        const { data: newEmpleado, error } = await supabase
           .from('empleados')
-          .insert([formData]);
+          .insert([formData])
+          .select()
+          .single();
 
         if (error) throw error;
-        alert('Empleado creado exitosamente');
+
+        setEnviandoInvitacion(true);
+        try {
+          await sendInvite(newEmpleado.id, formData.email, formData.nombre);
+          alert('Empleado creado e invitacion enviada exitosamente');
+        } catch (inviteError) {
+          console.error('Error enviando invitacion:', inviteError);
+          alert(`Empleado creado pero hubo un error al enviar la invitacion: ${(inviteError as Error).message}`);
+        }
       }
 
       onClose();
@@ -62,7 +97,48 @@ export function EmpleadoModal({ empleado, onClose }: EmpleadoModalProps) {
       alert('Error al guardar el empleado');
     } finally {
       setGuardando(false);
+      setEnviandoInvitacion(false);
     }
+  };
+
+  const handleResendInvite = async () => {
+    if (!empleado) return;
+
+    setEnviandoInvitacion(true);
+    try {
+      await sendInvite(empleado.id, formData.email, formData.nombre);
+      setInviteStatus('pending');
+      alert('Invitacion reenviada exitosamente');
+    } catch (error) {
+      console.error('Error reenviando invitacion:', error);
+      alert(`Error al reenviar invitacion: ${(error as Error).message}`);
+    } finally {
+      setEnviandoInvitacion(false);
+    }
+  };
+
+  const getInviteStatusBadge = () => {
+    if (!inviteStatus || inviteStatus === 'none') return null;
+
+    if (inviteStatus === 'pending') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-100 text-amber-700 text-xs rounded-full">
+          <Clock className="w-3 h-3" />
+          Invitacion pendiente
+        </span>
+      );
+    }
+
+    if (inviteStatus === 'accepted') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full">
+          <CheckCircle className="w-3 h-3" />
+          Cuenta activa
+        </span>
+      );
+    }
+
+    return null;
   };
 
   return (
@@ -81,6 +157,23 @@ export function EmpleadoModal({ empleado, onClose }: EmpleadoModalProps) {
         </div>
 
         <form onSubmit={handleSubmit} className="p-6">
+          {empleado && inviteStatus && (
+            <div className="mb-4 flex items-center justify-between">
+              {getInviteStatusBadge()}
+              {inviteStatus === 'pending' && (
+                <button
+                  type="button"
+                  onClick={handleResendInvite}
+                  disabled={enviandoInvitacion}
+                  className="inline-flex items-center gap-1 text-sm text-cyan-600 hover:text-cyan-700 disabled:opacity-50"
+                >
+                  <Send className="w-4 h-4" />
+                  {enviandoInvitacion ? 'Enviando...' : 'Reenviar invitacion'}
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">
@@ -117,7 +210,7 @@ export function EmpleadoModal({ empleado, onClose }: EmpleadoModalProps) {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">
-                  Teléfono
+                  Telefono
                 </label>
                 <input
                   type="tel"
@@ -130,14 +223,26 @@ export function EmpleadoModal({ empleado, onClose }: EmpleadoModalProps) {
 
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">
-                Email
+                <span className="flex items-center gap-1">
+                  <Mail className="w-4 h-4" />
+                  Email *
+                </span>
               </label>
               <input
                 type="email"
                 value={formData.email}
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                 className="w-full px-3 py-2 border border-slate-300 rounded-md focus:ring-2 focus:ring-cyan-400 focus:border-transparent"
+                placeholder="Se enviara invitacion a este correo"
+                required
+                disabled={empleado && inviteStatus === 'accepted'}
               />
+              {!empleado && (
+                <p className="mt-1 text-xs text-slate-500 flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3" />
+                  Se enviara una invitacion automaticamente al crear el empleado
+                </p>
+              )}
             </div>
 
             <div className="flex items-center">
@@ -164,10 +269,23 @@ export function EmpleadoModal({ empleado, onClose }: EmpleadoModalProps) {
             </button>
             <button
               type="submit"
-              disabled={guardando}
-              className="px-4 py-2 bg-cyan-500 hover:bg-cyan-600 text-white rounded-md transition-colors disabled:opacity-50"
+              disabled={guardando || enviandoInvitacion}
+              className="px-4 py-2 bg-cyan-500 hover:bg-cyan-600 text-white rounded-md transition-colors disabled:opacity-50 flex items-center gap-2"
             >
-              {guardando ? 'Guardando...' : 'Guardar Empleado'}
+              {guardando || enviandoInvitacion ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  {enviandoInvitacion ? 'Enviando invitacion...' : 'Guardando...'}
+                </>
+              ) : (
+                <>
+                  {!empleado && <Send className="w-4 h-4" />}
+                  {empleado ? 'Guardar Empleado' : 'Crear y Enviar Invitacion'}
+                </>
+              )}
             </button>
           </div>
         </form>
